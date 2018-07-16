@@ -1,7 +1,7 @@
 #predict the total count of bikes rented during each hour on the 20th day
 
 #set wd
-setwd("/Users/User/Desktop/Bike Sharing Demand/")
+setwd("/Users/User/Desktop/Bike Sharing Demand/PredictBikeSharingKaggle/")
 
 #load data
 train <- read.csv("train.csv", stringsAsFactors = F)
@@ -152,62 +152,34 @@ write.csv(results, file = 'BikeSharingDemand_RandomForest.csv', row.names = FALS
 #######################################
 #------Predictive Model w XGBOOST-----#
 #######################################
-library(caret)
-library(Metrics)
 library(xgboost)
 
-# Create custom summary function in proper format for caret
-custom_summary <- function(data, lev = NULL, model = NULL){
-  out = rmsle(data[, "obs"], data[, "pred"])
-  names(out) = c("rmsle")
-  out
-}
-
-# Create control object
-control <- trainControl(method = "cv",  # Use cross validation
-                        number = 5,     # 5-folds
-                        summaryFunction = custom_summary                      
-)
+train$count <- log1p(train$count) #count transformation
+train$season <- as.numeric(train$season)
 
 
-# Create grid of tuning parameters
-grid <- expand.grid(nrounds=c(100, 200, 400, 800), # Test 4 values for boosting rounds
-                    max_depth= c(4, 6),           # Test 3 values for tree depth
-                    eta=c(0.1, 0.05, 0.025),      # Test 3 values for learning rate: 0.1, 0.05, 0.025
-                    gamma= c(0.1),                #https://xgboost.readthedocs.io/en/latest/parameter.html for explanation
-                    colsample_bytree = c(1), 
-                    min_child_weight = c(1),
-                    subsample = c(1))
+#model development
+x_train <- as.matrix(select(train, -count))
+y_train <- train$count
 
-#training and development of model
+dtrain <- xgb.DMatrix(x_train, label = y_train)
+model <- xgb.train(data = dtrain, nround = 150, max_depth = 5, eta = 0.1, subsample = 0.9) #can add in tuning matrix! 
 
-xgb_tree_model <- train(count~.,      # Predict SalePrice using all features
-                        data=train,
-                        method="xgbTree",
-                        trControl=control, #for cross validation w control
-                        tuneGrid=grid, 
-                        metric="rmsle",     # Use custom performance metric
-                        maximize = FALSE)   # Minimize the metric
+#plot importance of variables
+xgb.plot.importance(xgb.importance(feature_names = colnames(x_train), model))
 
-#Analysis of results
-xgb_tree_model$bestTune #tells us the best model, is a tree with depth 4, trained 400 rounds w learning rate 0.1 (eta)
-xgb_tree_model$results #find the RMSLE from the above model here: RMSLE = 0.1327114; the lower the better!
+#model test
+test$datetime <- as.POSIXct(test$datetime, format="%Y-%m-%d %H:%M:%S")
+test$hour <- sapply(test$datetime, function(x) format(x,"%H"))
+test$year <- sapply(test$datetime, function(x) format(x, "%Y"))
+test$season <- as.numeric(test$season)
+test$hour <- as.numeric(test$hour)
+test$year <- as.numeric(test$year)
 
+x_test <- as.matrix(select(test, -c(datetime, atemp)))
+y_test <- test$count
+preds <- predict(model, x_test)
+preds <- expm1(preds) #to get back absolute count
+solution <- data.frame(datetime = test$datetime, count = preds)
+write.csv(solution, "BikeSharingDemand_XGBoost.csv", row.names = FALSE)
 
-varImp(xgb_tree_model) #identify which predictors are most impt to the model
-
-#testing of dataset
-
-test_predictions <- predict(xgb_tree_model, newdata=test)
-
-submission <- read.csv("sampleSubmission.csv")
-submission$count <- test_predictions
-
-
-for (i in 1:nrow(submission)){ #check on how do i get 
-  if (submission[i,2] < 0){
-  submission[i,2] <- 1
-  } 
-}
-
-write.csv(submission, "bikerentalxgboosted.csv", row.names=FALSE)
